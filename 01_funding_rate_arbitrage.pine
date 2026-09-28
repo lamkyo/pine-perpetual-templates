@@ -1,0 +1,86 @@
+//@version=5
+strategy("Funding-Aware Carry Arbitrage [Pro]", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=20, commission_type=strategy.commission.percent, commission_value=0.05, slippage=2)
+
+// ==========================================
+// 1. INPUT PARAMETERS
+// ==========================================
+grp_funding = "Funding Rate Carry Settings"
+fundingSymbol = input.symbol("BINANCE:BTCUSDT_PERP_FUNDING", "Funding Rate Source Symbol", group=grp_funding, tooltip="Default funding rate symbol on TradingView for USD(S)-M")
+fundingThresholdLong = input.float(-0.0003, "Long Entry Funding Threshold (< %)", group=grp_funding, tooltip="Enter Long when funding is deeply negative (shorts pay longs carry)")
+fundingThresholdShort = input.float(0.0005, "Short Entry Funding Threshold (> %)", group=grp_funding, tooltip="Enter Short when funding is strongly positive (longs pay shorts carry)")
+exitThreshold = input.float(0.0001, "Carry Normalization Exit Threshold", group=grp_funding)
+
+grp_risk = "Risk & Leverage Parameters"
+leverage = input.int(5, "Leverage (1-50x)", minval=1, maxval=50, group=grp_risk)
+atrLen = input.int(14, "ATR Volatility Period", group=grp_risk)
+atrMultiplierSL = input.float(2.5, "ATR Multiplier for Stop Loss", group=grp_risk)
+trailingOffsetTicks = input.int(50, "Trailing Stop Offset (Ticks)", group=grp_risk)
+
+grp_time = "Backtest Time Window"
+startDate = input.time(timestamp("2023-01-01 00:00 +0000"), "Start Date", group=grp_time)
+endDate = input.time(timestamp("2030-01-01 00:00 +0000"), "End Date", group=grp_time)
+inDateRange = time >= startDate and time <= endDate
+
+// ==========================================
+// 2. INDICATORS & FUNDING ENGINE
+// ==========================================
+// Fetch funding rate without lookahead bias
+fundingRate = request.security(fundingSymbol, "D", close, lookahead=barmerge.lookahead_off)
+fundingRateSafe = na(fundingRate) ? 0.0 : fundingRate
+
+atrVal = ta.atr(atrLen)
+ema200 = ta.ema(close, 200)
+
+// Dynamic liquidation estimate (Isolated Margin approximation)
+// Long Liq = Entry * (1 - 1/leverage + maintenance_margin_ratio)
+mmr = 0.004 // 0.4% base tier maintenance margin for BTC
+longLiqEst = close * (1.0 - (1.0 / leverage) + mmr)
+shortLiqEst = close * (1.0 + (1.0 / leverage) - mmr)
+
+// ==========================================
+// 3. EXECUTION LOGIC
+// ==========================================
+longCondition = inDateRange and (fundingRateSafe <= fundingThresholdLong) and (close > ema200 * 0.95)
+shortCondition = inDateRange and (fundingRateSafe >= fundingThresholdShort) and (close < ema200 * 1.05)
+
+longExit = (fundingRateSafe >= exitThreshold) or (close < longLiqEst * 1.05)
+shortExit = (fundingRateSafe <= -exitThreshold) or (close > shortLiqEst * 0.95)
+
+if (longCondition and strategy.position_size <= 0)
+    slPrice = close - atrVal * atrMultiplierSL
+    strategy.entry("Long Carry", strategy.long, comment="Enter Long (Negative Funding)")
+    strategy.exit("Exit Long SL", "Long Carry", stop=slPrice, trail_points=atrVal * 1.5 / syminfo.mintick, trail_offset=trailingOffsetTicks)
+
+if (shortCondition and strategy.position_size >= 0)
+    slPrice = close + atrVal * atrMultiplierSL
+    strategy.entry("Short Carry", strategy.short, comment="Enter Short (Positive Funding)")
+    strategy.exit("Exit Short SL", "Short Carry", stop=slPrice, trail_points=atrVal * 1.5 / syminfo.mintick, trail_offset=trailingOffsetTicks)
+
+if (longExit and strategy.position_size > 0)
+    strategy.close("Long Carry", comment="Funding Normalized / Risk Guard")
+
+if (shortExit and strategy.position_size < 0)
+    strategy.close("Short Carry", comment="Funding Normalized / Risk Guard")
+
+// ==========================================
+// 4. VISUALIZATION & AUDIT HUD
+// ==========================================
+plot(ema200, "200 EMA Baseline", color=color.blue, linewidth=2)
+plot(strategy.position_size > 0 ? longLiqEst : na, "Estimated Long Liq", color=color.red, style=plot.style_linebr)
+plot(strategy.position_size < 0 ? shortLiqEst : na, "Estimated Short Liq", color=color.orange, style=plot.style_linebr)
+
+// Information Table
+var table hud = table.new(position.top_right, 2, 4, bgcolor=color.new(color.black, 20), border_color=color.gray, border_width=1)
+if barstate.islast
+    table.cell(hud, 0, 0, "Funding Rate", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 0, str.tostring(fundingRateSafe * 100, "#.####") + "%", text_color=(fundingRateSafe >= 0 ? color.green : color.red), text_size=size.small)
+    
+    table.cell(hud, 0, 1, "Leverage / MMR", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 1, str.tostring(leverage) + "x / " + str.tostring(mmr * 100, "#.#") + "%", text_color=color.yellow, text_size=size.small)
+    
+    table.cell(hud, 0, 2, "Current Position", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 2, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT", text_color=color.white, text_size=size.small)
+    
+    table.cell(hud, 0, 3, "Liq Safety Buffer", text_color=color.white, text_size=size.small)
+    distPct = strategy.position_size > 0 ? ((close - longLiqEst) / close * 100) : strategy.position_size < 0 ? ((shortLiqEst - close) / close * 100) : 100.0
+    table.cell(hud, 1, 3, str.tostring(distPct, "#.##") + "%", text_color=(distPct > 10.0 ? color.green : color.red), text_size=size.small)

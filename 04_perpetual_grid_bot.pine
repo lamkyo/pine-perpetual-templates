@@ -1,0 +1,54 @@
+//@version=5
+strategy("Perpetual Range Grid Bot [Pro]", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.03, slippage=1)
+
+// ==========================================
+// 1. INPUT PARAMETERS
+// ==========================================
+grp_grid = "Grid Geometry"
+gridLower = input.float(55000.0, "Grid Lower Boundary (USDT)", group=grp_grid)
+gridUpper = input.float(68000.0, "Grid Upper Boundary (USDT)", group=grp_grid)
+gridLinesCount = input.int(10, "Number of Grid Lines", minval=3, maxval=50, group=grp_grid)
+
+grp_risk = "Perpetual Safety & Liquidation"
+leverage = input.int(3, "Grid Leverage", minval=1, maxval=20, group=grp_risk)
+stopLossBelowGridPct = input.float(3.0, "Stop Loss Below Grid Lower (%)", group=grp_risk)
+takeProfitAboveGridPct = input.float(3.0, "Take Profit Above Grid Upper (%)", group=grp_risk)
+
+// ==========================================
+// 2. GRID COMPUTATION
+// ==========================================
+stepSize = (gridUpper - gridLower) / gridLinesCount
+slPrice = gridLower * (1.0 - (stopLossBelowGridPct / 100.0))
+tpPrice = gridUpper * (1.0 + (takeProfitAboveGridPct / 100.0))
+
+// Calculate active grid band
+currentBand = math.floor((close - gridLower) / stepSize)
+prevBand = nz(currentBand[1], currentBand)
+
+// ==========================================
+// 3. EXECUTION
+// ==========================================
+inRange = (close >= gridLower) and (close <= gridUpper)
+
+// Buy when price crosses down into a lower grid level
+if inRange and (currentBand < prevBand)
+    strategy.entry("Grid Buy " + str.tostring(currentBand), strategy.long, limit=close)
+
+// Sell when price crosses up into a higher grid level
+if inRange and (currentBand > prevBand) and (strategy.position_size > 0)
+    strategy.close("Grid Buy " + str.tostring(prevBand), comment="Grid Take Profit")
+
+// Hard risk boundaries
+if (close < slPrice)
+    strategy.close_all(comment="GRID STOP LOSS BREACH")
+
+if (close > tpPrice)
+    strategy.close_all(comment="GRID RANGE EXCEEDED TP")
+
+// ==========================================
+// 4. VISUALIZATION
+// ==========================================
+plot(gridUpper, "Grid Upper Bound", color=color.red, linewidth=2)
+plot(gridLower, "Grid Lower Bound", color=color.green, linewidth=2)
+plot(slPrice, "Grid Stop Loss", color=color.maroon, style=plot.style_circles)
+plot(tpPrice, "Grid Target Out", color=color.teal, style=plot.style_circles)

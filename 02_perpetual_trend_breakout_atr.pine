@@ -1,0 +1,71 @@
+//@version=5
+strategy("Perpetual Trend Breakout ATR [Pro]", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=25, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1)
+
+// ==========================================
+// 1. INPUT PARAMETERS
+// ==========================================
+grp_trend = "Trend & Donchian Channels"
+channelLen = input.int(20, "Donchian Channel Length", minval=5, group=grp_trend)
+emaFilterLen = input.int(200, "Macro Trend Filter EMA", group=grp_trend)
+
+grp_vol = "Volatility & Trailing Stop"
+atrPeriod = input.int(14, "ATR Period", group=grp_vol)
+atrMultSL = input.float(2.0, "Initial Stop Loss ATR Mult", group=grp_vol)
+atrMultTP = input.float(4.0, "Take Profit ATR Mult", group=grp_vol)
+atrTrailStep = input.float(1.5, "Trailing Step ATR Mult", group=grp_vol)
+
+grp_risk = "Leverage & Margin Safety"
+leverage = input.int(10, "Target Leverage", minval=1, maxval=50, group=grp_risk)
+minLiqBufferPct = input.float(5.0, "Minimum Liq Buffer (% from mark)", group=grp_risk)
+
+// ==========================================
+// 2. INDICATORS & CHANNELS
+// ==========================================
+highestHigh = ta.highest(high[1], channelLen)
+lowestLow = ta.lowest(low[1], channelLen)
+macroEma = ta.ema(close, emaFilterLen)
+atr = ta.atr(atrPeriod)
+
+// Liquidation Price Estimation (Binance Isolated Margin)
+mmr = 0.005 // 0.5% default tier maintenance margin
+longLiqPrice = close * (1.0 - (1.0 / leverage) + mmr)
+shortLiqPrice = close * (1.0 + (1.0 / leverage) - mmr)
+
+// ==========================================
+// 3. CONDITIONS & TRADING
+// ==========================================
+longBreakout = (close > highestHigh) and (close > macroEma)
+shortBreakout = (close < lowestLow) and (close < macroEma)
+
+// Safety gate: never enter if estimated liquidation distance is narrower than buffer
+longSafe = (close - longLiqPrice) / close * 100 > minLiqBufferPct
+shortSafe = (shortLiqPrice - close) / close * 100 > minLiqBufferPct
+
+if (longBreakout and longSafe and strategy.position_size <= 0)
+    sl = close - (atr * atrMultSL)
+    tp = close + (atr * atrMultTP)
+    strategy.entry("Long Trend", strategy.long)
+    strategy.exit("Exit Long", "Long Trend", stop=sl, limit=tp, trail_points=atr * atrTrailStep / syminfo.mintick, trail_offset=20)
+
+if (shortBreakout and shortSafe and strategy.position_size >= 0)
+    sl = close + (atr * atrMultSL)
+    tp = close - (atr * atrMultTP)
+    strategy.entry("Short Trend", strategy.short)
+    strategy.exit("Exit Short", "Short Trend", stop=sl, limit=tp, trail_points=atr * atrTrailStep / syminfo.mintick, trail_offset=20)
+
+// Emergency exit if price approaches liquidation threshold within 2%
+if (strategy.position_size > 0 and (close - longLiqPrice) / close * 100 <= 2.0)
+    strategy.close("Long Trend", comment="EMERGENCY LIQ GUARD")
+
+if (strategy.position_size < 0 and (shortLiqPrice - close) / close * 100 <= 2.0)
+    strategy.close("Short Trend", comment="EMERGENCY LIQ GUARD")
+
+// ==========================================
+// 4. PLOTS & AUDIT METRICS
+// ==========================================
+plot(highestHigh, "Channel High", color=color.new(color.green, 40), linewidth=1)
+plot(lowestLow, "Channel Low", color=color.new(color.red, 40), linewidth=1)
+plot(macroEma, "Macro 200 EMA", color=color.yellow, linewidth=2)
+
+plot(strategy.position_size > 0 ? longLiqPrice : na, "Long Liq Level", color=color.red, style=plot.style_circles)
+plot(strategy.position_size < 0 ? shortLiqPrice : na, "Short Liq Level", color=color.maroon, style=plot.style_circles)

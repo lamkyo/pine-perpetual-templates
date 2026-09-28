@@ -1,0 +1,55 @@
+//@version=5
+strategy("Liquidation Cascade Spike Reversal [Pro]", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=20, commission_type=strategy.commission.percent, commission_value=0.04, slippage=2)
+
+// ==========================================
+// 1. INPUT PARAMETERS
+// ==========================================
+grp_liq = "Liquidation Spike Detection"
+volMultiplier = input.float(2.2, "Volume Spike Multiplier vs 20 SMA", group=grp_liq)
+wickRatio = input.float(0.55, "Minimum Wick-to-Range Ratio", group=grp_liq, tooltip="Ratio of liquidation tail relative to total high-low span")
+atrPeriod = input.int(14, "ATR Period for Volatility", group=grp_liq)
+
+grp_risk = "Trade Management"
+riskRewardRatio = input.float(2.5, "Risk-to-Reward Ratio (TP/SL)", group=grp_risk)
+leverage = input.int(5, "Leverage Setting", group=grp_risk)
+
+// ==========================================
+// 2. CANDLE & VOLUME ANALYSIS
+// ==========================================
+volSma = ta.sma(volume, 20)
+isHighVolume = volume >= (volSma * volMultiplier)
+atr = ta.atr(atrPeriod)
+
+candleRange = high - low
+candleBody = math.abs(close - open)
+lowerWick = math.min(open, close) - low
+upperWick = high - math.max(open, close)
+
+// Long Liquidation Flush: violent down-wick with high volume snapping back up
+isLongFlush = isHighVolume and (candleRange > atr * 1.2) and (lowerWick >= candleRange * wickRatio) and (close > open or close >= (low + candleRange * 0.4))
+
+// Short Squeeze Flush: violent up-wick with high volume snapping back down
+isShortFlush = isHighVolume and (candleRange > atr * 1.2) and (upperWick >= candleRange * wickRatio) and (close < open or close <= (high - candleRange * 0.4))
+
+// ==========================================
+// 3. EXECUTION
+// ==========================================
+if (isLongFlush and strategy.position_size <= 0)
+    sl = low - (atr * 0.3)
+    riskDist = close - sl
+    tp = close + (riskDist * riskRewardRatio)
+    strategy.entry("Long Liq Flush", strategy.long)
+    strategy.exit("Exit Long Liq", "Long Liq Flush", stop=sl, limit=tp)
+
+if (isShortFlush and strategy.position_size >= 0)
+    sl = high + (atr * 0.3)
+    riskDist = sl - close
+    tp = close - (riskDist * riskRewardRatio)
+    strategy.entry("Short Squeeze Flush", strategy.short)
+    strategy.exit("Exit Short Liq", "Short Squeeze Flush", stop=sl, limit=tp)
+
+// ==========================================
+// 4. PLOTS & VISUAL MARKERS
+// ==========================================
+plotshape(isLongFlush, title="Long Liq Flush Signal", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small, text="LIQ FLUSH")
+plotshape(isShortFlush, title="Short Squeeze Flush Signal", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small, text="SQUEEZE")

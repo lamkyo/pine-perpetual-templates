@@ -1,0 +1,93 @@
+//@version=5
+indicator("Binance USDⓈ-M Accounting Parity HUD [Audit]", overlay=true)
+
+// ==========================================
+// 1. USER INPUTS
+// ==========================================
+grp_acc = "Perpetual Account Configuration"
+leverage = input.int(10, "Account Leverage", minval=1, maxval=125, group=grp_acc)
+positionSide = input.string("LONG", "Active Position Side", options=["LONG", "SHORT", "FLAT"], group=grp_acc)
+entryPrice = input.float(65000.0, "Position Entry Price (USDT)", minval=0.0, group=grp_acc)
+positionNotional = input.float(10000.0, "Position Notional Value (USDT)", minval=0.0, group=grp_acc)
+
+grp_funding = "Funding & Fee Attribution"
+fundingSymbol = input.symbol("BINANCE:BTCUSDT_PERP_FUNDING", "Funding Rate Source", group=grp_funding)
+takerFeeRate = input.float(0.05, "Taker Fee Rate (%)", group=grp_funding) / 100.0
+makerFeeRate = input.float(0.02, "Maker Fee Rate (%)", group=grp_funding) / 100.0
+
+// ==========================================
+// 2. BINANCE RISK BRACKET LOGIC (10-TIER TABLE)
+// ==========================================
+// Tier 1: 0 - 50k (MMR 0.4%)
+// Tier 2: 50k - 250k (MMR 0.5%)
+// Tier 3: 250k - 1M (MMR 1.0%)
+// Tier 4: 1M - 5M (MMR 2.5%)
+// Tier 5: 5M - 20M (MMR 5.0%)
+// Tier 6: 20M - 50M (MMR 10.0%)
+// Tier 7: 50M - 100M (MMR 12.5%)
+// Tier 8: 100M - 150M (MMR 15.0%)
+// Tier 9: 150M - 200M (MMR 20.0%)
+// Tier 10: 200M - 300M (MMR 25.0%)
+f_get_mmr(notional) =>
+    notional <= 50000.0 ? 0.004 :
+     notional <= 250000.0 ? 0.005 :
+     notional <= 1000000.0 ? 0.010 :
+     notional <= 5000000.0 ? 0.025 :
+     notional <= 20000000.0 ? 0.050 :
+     notional <= 50000000.0 ? 0.100 :
+     notional <= 100000000.0 ? 0.125 :
+     notional <= 150000000.0 ? 0.150 :
+     notional <= 200000000.0 ? 0.200 : 0.250
+
+mmr = f_get_mmr(positionNotional)
+
+// ==========================================
+// 3. PARITY CALCULATIONS
+// ==========================================
+// Isolated Margin Liquidation Formula:
+// Long: Liq = Entry * (1 - 1/Lev + MMR)
+// Short: Liq = Entry * (1 + 1/Lev - MMR)
+longLiq = entryPrice * (1.0 - (1.0 / leverage) + mmr)
+shortLiq = entryPrice * (1.0 + (1.0 / leverage) - mmr)
+
+currentLiq = positionSide == "LONG" ? longLiq : positionSide == "SHORT" ? shortLiq : na
+liqDistUSDT = na(currentLiq) ? 0.0 : math.abs(close - currentLiq)
+liqDistPct = na(currentLiq) ? 100.0 : (liqDistUSDT / close * 100.0)
+
+// Funding rate
+fundingRate = request.security(fundingSymbol, "D", close, lookahead=barmerge.lookahead_off)
+fundingSafe = na(fundingRate) ? 0.0 : fundingRate
+annualizedCarry = fundingSafe * 3.0 * 365.0 * 100.0 // 3 intervals per day * 365 days
+
+// Roundtrip friction hurdle (Open taker + Close taker + 2 bps slippage)
+roundtripHurdleBps = (takerFeeRate * 2.0 * 10000.0) + 2.0
+
+// ==========================================
+// 4. ON-CHART HUD TABLE
+// ==========================================
+var table hud = table.new(position.top_right, 2, 7, bgcolor=color.new(#131722, 10), border_color=#363a45, border_width=1)
+
+if barstate.islast
+    table.cell(hud, 0, 0, "Binance USD(S)-M Audit", bgcolor=#2962ff, text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 0, "Parity Engine v1.0", bgcolor=#2962ff, text_color=color.white, text_size=size.small)
+    
+    table.cell(hud, 0, 1, "Position / Leverage", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 1, positionSide + " (" + str.tostring(leverage) + "x)", text_color=color.yellow, text_size=size.small)
+    
+    table.cell(hud, 0, 2, "Risk Tier / MMR", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 2, str.tostring(mmr * 100, "#.##") + "% (Notional: $" + str.tostring(positionNotional, "#") + ")", text_color=color.white, text_size=size.small)
+    
+    table.cell(hud, 0, 3, "Est. Liquidation Price", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 3, na(currentLiq) ? "N/A" : "$" + str.tostring(currentLiq, "#.##"), text_color=color.red, text_size=size.small)
+    
+    table.cell(hud, 0, 4, "Safety Distance to Liq", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 4, str.tostring(liqDistPct, "#.##") + "% ($" + str.tostring(liqDistUSDT, "#.#") + ")", text_color=(liqDistPct > 15.0 ? color.green : color.red), text_size=size.small)
+    
+    table.cell(hud, 0, 5, "Funding Rate (8h / APR)", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 5, str.tostring(fundingSafe * 100, "#.####") + "% / " + str.tostring(annualizedCarry, "#.##") + "%", text_color=(fundingSafe >= 0 ? color.teal : color.orange), text_size=size.small)
+    
+    table.cell(hud, 0, 6, "Roundtrip Fee+Slippage", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 6, str.tostring(roundtripHurdleBps, "#.#") + " bps ($" + str.tostring(positionNotional * roundtripHurdleBps / 10000.0, "#.##") + ")", text_color=color.white, text_size=size.small)
+
+// Plots
+plot(currentLiq, "Liquidation Price Level", color=color.red, linewidth=2, style=plot.style_linebr)
