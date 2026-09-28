@@ -70,3 +70,14 @@ Checks verified:
 - Elimination of lookahead bias (`barmerge.lookahead_off`)
 - Exact syntactic delimiter balancing
 - Full parity with Binance 10-tier USDⓈ-M risk brackets
+
+---
+
+## 🛒 Purchase & Instant Download ($39.00)
+
+Get the complete 6 production scripts, parameter presets, and lifetime updates on your platform of choice:
+
+* **[Whop.com (Crypto, Apple Pay, Cards — 3% Fee)](https://whop.com/checkout/plan_KbX1UmbZutI1b)**
+* **[Payhip.com (PayPal & Credit Cards)](https://payhip.com/b/X924l)**
+* **[Gumroad.com](https://laminate220.gumroad.com/l/ophtql)**
+
